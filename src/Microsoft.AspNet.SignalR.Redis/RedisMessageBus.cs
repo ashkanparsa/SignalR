@@ -22,6 +22,7 @@ namespace Microsoft.AspNet.SignalR.Redis
         private readonly int _db;
         private readonly string _key;
         private readonly TraceSource _trace;
+        private readonly ITraceManager _traceManager;
 
         private IRedisConnection _connection;
         private string _connectionString;
@@ -49,9 +50,9 @@ namespace Microsoft.AspNet.SignalR.Redis
             _db = configuration.Database;
             _key = configuration.EventKey;
 
-            var traceManager = resolver.Resolve<ITraceManager>();
+            _traceManager = resolver.Resolve<ITraceManager>();
 
-            _trace = traceManager["SignalR." + typeof(RedisMessageBus).Name];
+            _trace = _traceManager["SignalR." + nameof(RedisMessageBus)];
 
             ReconnectDelay = TimeSpan.FromSeconds(2);
 
@@ -88,6 +89,7 @@ namespace Microsoft.AspNet.SignalR.Redis
 
         protected override void Dispose(bool disposing)
         {
+            _trace.TraceInformation(nameof(RedisMessageBus) + " is being disposed");
             if (disposing)
             {
                 var oldState = Interlocked.Exchange(ref _state, State.Disposing);
@@ -144,6 +146,7 @@ namespace Microsoft.AspNet.SignalR.Redis
             {
                 if (_state == State.Closed)
                 {
+                    _trace.TraceVerbose("Duplicate ConnectionFailed event - ignoring");
                     return;
                 }
 
@@ -183,6 +186,7 @@ namespace Microsoft.AspNet.SignalR.Redis
             {
                 if (_state == State.Connected)
                 {
+                    _trace.TraceVerbose("Duplicate ConnectionRestored event - ignoring");
                     return;
                 }
 
@@ -214,18 +218,19 @@ namespace Microsoft.AspNet.SignalR.Redis
 
                     if (oldState == State.Closed)
                     {
+                        _trace.TraceInformation("Opening stream.");
                         OpenStream(0);
                     }
                     else
                     {
                         Debug.Assert(oldState == State.Disposing, "unexpected state");
+                        _trace.TraceError("Unexpected state.");
 
                         Shutdown();
                     }
 
                     break;
                 }
-
                 catch (Exception ex)
                 {
                     _trace.TraceError("Error connecting to Redis - " + ex.GetBaseException());
@@ -233,6 +238,7 @@ namespace Microsoft.AspNet.SignalR.Redis
 
                 if (_state == State.Disposing)
                 {
+                    _trace.TraceInformation("MessageBus is disposing.");
                     Shutdown();
                     break;
                 }
@@ -252,7 +258,7 @@ namespace Microsoft.AspNet.SignalR.Redis
 
             _trace.TraceInformation("Connecting...");
 
-            await _connection.ConnectAsync(_connectionString, _trace);
+            await _connection.ConnectAsync(_connectionString, _traceManager["SignalR." + nameof(RedisConnection)]);
 
             _trace.TraceInformation("Connection opened");
 
@@ -273,33 +279,6 @@ namespace Microsoft.AspNet.SignalR.Redis
             {
                 OnReceived(streamIndex, message.Id, message.ScaleoutMessage);
             }
-        }
-
-        private void TraceRedisScriptResult(Task<object> redisTask)
-        {
-            if (!_trace.Switch.ShouldTrace(TraceEventType.Verbose))
-            {
-                return;
-            }
-
-            var result = redisTask.Result as object[];
-            var argumentNames = new string[] { "newId", "message", "payload" };
-
-            for (var i = 0; i < result.Length; i++)
-            {
-                var r = result[i];
-                _trace.TraceVerbose("Sending {0}: ({1}) {2}", argumentNames[i], r.GetType().Name, FormatBytes(r));
-            }
-        }
-
-        private static string FormatBytes(object payload)
-        {
-            byte[] bytes = payload as byte[];
-            if (bytes != null)
-            {
-                return bytes.Length + " bytes: " + BitConverter.ToString(bytes).Replace("-", string.Empty);
-            }
-            return payload.ToString();
         }
 
         // Internal for testing purposes
